@@ -83,20 +83,20 @@ export async function startNewRound(poolId) {
     .from('questions')
     .select('id')
     .eq('is_active', true);
-
+    
   if (qError) throw qError;
-
+  
   // Shuffle and pick 5
   const shuffled = (allQuestions || []).sort(() => 0.5 - Math.random()).slice(0, 5);
 
   // 3. Insert new round
   const { data: newRound, error } = await supabase
     .from('rounds')
-    .insert([{
-      pool_id: poolId,
-      block_index: nextIndex,
-      status: 'active',
-      started_at: new Date().toISOString()
+    .insert([{ 
+      pool_id: poolId, 
+      block_index: nextIndex, 
+      status: 'active', 
+      started_at: new Date().toISOString() 
     }])
     .select()
     .single();
@@ -109,7 +109,7 @@ export async function startNewRound(poolId) {
     question_id: q.id,
     order_index: idx + 1
   }));
-
+  
   if (roundQuestionsData.length > 0) {
     const { error: rqError } = await supabase
       .from('round_questions')
@@ -122,37 +122,44 @@ export async function startNewRound(poolId) {
 
 /**
  * Fetches the specific 5 questions bound to a round.
- * Falls back to directly fetching active questions if round has no questions bound.
+ * Uses robust two-step lookup to avoid fragile Foreign Key join requirements.
  */
 export async function getRoundQuestions(roundId) {
   let questions = [];
 
   if (roundId) {
-    const { data, error } = await supabase
+    // Step 1: Get the list of question_ids for this round
+    const { data: rqs, error: rqError } = await supabase
       .from('round_questions')
-      .select(`
-        id,
-        order_index,
-        questions (
-          id,
-          prompt,
-          options,
-          answer
-        )
-      `)
+      .select('id, question_id, order_index')
       .eq('round_id', roundId)
       .order('order_index', { ascending: true });
 
-    if (!error && data && data.length > 0) {
-      questions = data
-        .filter(rq => rq.questions)
-        .map(rq => ({
-          round_question_id: rq.id,
-          id: rq.questions.id,
-          prompt: rq.questions.prompt,
-          options: rq.questions.options || [],
-          answer: rq.questions.answer
-        }));
+    if (!rqError && rqs && rqs.length > 0) {
+      const qIds = rqs.map(r => r.question_id);
+
+      // Step 2: Fetch the actual question records
+      const { data: qRows, error: qError } = await supabase
+        .from('questions')
+        .select('id, prompt, options, answer')
+        .in('id', qIds);
+
+      if (!qError && qRows && qRows.length > 0) {
+        const qMap = new Map(qRows.map(q => [q.id, q]));
+        questions = rqs
+          .map(rq => {
+            const q = qMap.get(rq.question_id);
+            if (!q) return null;
+            return {
+              round_question_id: rq.id,
+              id: q.id,
+              prompt: q.prompt,
+              options: q.options || [],
+              answer: q.answer
+            };
+          })
+          .filter(Boolean);
+      }
     }
   }
 
