@@ -1,11 +1,21 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../utils/supabase';
+import { getDefaultPool } from '../utils/api';
 
 export function useMempool(minerName, regNo, isAdmin = false, isPassive = false) {
   const [miners, setMiners] = useState([]);
   const [gameState, setGameState] = useState('waiting');
   const [channelInstance, setChannelInstance] = useState(null);
   const [poolConfig, setPoolConfig] = useState({ maxMiners: 10 });
+
+  // Fetch initial pool config on mount
+  useEffect(() => {
+    getDefaultPool().then(pool => {
+      if (pool && pool.max_miners) {
+        setPoolConfig(prev => ({ ...prev, maxMiners: pool.max_miners }));
+      }
+    }).catch(console.error);
+  }, []);
 
   useEffect(() => {
     // If not admin, not passive, and missing credentials, don't connect
@@ -42,9 +52,9 @@ export function useMempool(minerName, regNo, isAdmin = false, isPassive = false)
           
         setMiners(activeMiners);
         
-        // If an admin is in the pool, sync their maxMiners config globally
+        // If an admin is in the pool, sync their maxMiners config globally as an override
         if (foundAdminConfig && foundAdminConfig.maxMiners) {
-          setPoolConfig({ maxMiners: foundAdminConfig.maxMiners });
+          setPoolConfig(prev => ({ ...prev, maxMiners: foundAdminConfig.maxMiners }));
         }
       })
       .on('presence', { event: 'join' }, ({ key, newPresences }) => {
@@ -71,7 +81,8 @@ export function useMempool(minerName, regNo, isAdmin = false, isPassive = false)
     channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         if (isAdmin) {
-          await channel.track({ role: 'admin', maxMiners: 10 });
+          // We wait for the default pool fetch to set the actual maxMiners
+          // If updateAdminConfig is called later, it tracks the new config
         } else if (!isPassive) {
           await channel.track({
             name: minerName,

@@ -1,23 +1,41 @@
 import React, { useState, useEffect } from 'react';
 import { useMempool } from './hooks/useMempool';
-import { getDefaultPool, startNewRound } from './utils/api';
+import { getDefaultPool, startNewRound, updatePoolMaxMiners } from './utils/api';
 
 export default function Admin() {
   const { miners, channel, updateAdminConfig } = useMempool(null, null, true); // true = isAdmin
   const [maxMiners, setMaxMiners] = useState(10);
   const [broadcasting, setBroadcasting] = useState(false);
   const [pool, setPool] = useState(null);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
-    getDefaultPool().then(setPool).catch(console.error);
+    getDefaultPool().then(p => {
+      setPool(p);
+      if (p.max_miners) {
+        setMaxMiners(p.max_miners);
+        if (updateAdminConfig) updateAdminConfig({ maxMiners: p.max_miners });
+      }
+    }).catch(console.error);
   }, []);
 
-  // Sync maxMiners into the admin's Presence state so it persists for late joiners
-  useEffect(() => {
-    if (updateAdminConfig) {
-      updateAdminConfig({ maxMiners: Number(maxMiners) });
+  const handleSetMaxMiners = async () => {
+    if (!pool) return;
+    setIsUpdating(true);
+    try {
+      await updatePoolMaxMiners(pool.id, Number(maxMiners));
+      // Still broadcast it over socket for instant UI updates for currently connected clients
+      if (updateAdminConfig) {
+        updateAdminConfig({ maxMiners: Number(maxMiners) });
+      }
+      alert('Max miners updated in database!');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to update max miners. Did you add the max_miners column to the pools table?');
+    } finally {
+      setIsUpdating(false);
     }
-  }, [maxMiners, channel]);
+  };
 
   const handleBroadcast = async () => {
     if (!channel || !pool) return;
@@ -71,7 +89,7 @@ export default function Admin() {
           <div className="col-span-1 lg:col-span-2 bg-slate-900/50 rounded-2xl border border-purple-900/30 p-6 backdrop-blur-sm">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <span className="text-2xl">📡</span> Mempool Monitor
+                <span className="text-2xl">🔌</span> Mempool Monitor
               </h2>
               <div className="bg-purple-950/50 text-purple-300 py-1 px-3 rounded-lg text-sm font-mono border border-purple-800/50">
                 Connected: {miners.length} / {maxMiners}
@@ -80,12 +98,21 @@ export default function Admin() {
 
             <div className="mb-6 flex gap-4 items-center bg-slate-950/50 p-4 rounded-xl border border-white/5">
               <label className="text-sm text-purple-200/70 uppercase font-semibold">Max Miners for Next Round:</label>
-              <input 
-                type="number" 
-                value={maxMiners}
-                onChange={(e) => setMaxMiners(e.target.value)}
-                className="bg-slate-900 border border-purple-700/50 rounded-lg px-3 py-1 w-20 text-white text-center focus:outline-none focus:border-fuchsia-500"
-              />
+              <div className="flex gap-2">
+                <input 
+                  type="number" 
+                  value={maxMiners}
+                  onChange={(e) => setMaxMiners(e.target.value)}
+                  className="bg-slate-900 border border-purple-700/50 rounded-lg px-3 py-1 w-24 text-white text-center focus:outline-none focus:border-fuchsia-500"
+                />
+                <button 
+                  onClick={handleSetMaxMiners}
+                  disabled={isUpdating}
+                  className="bg-fuchsia-700 hover:bg-fuchsia-600 text-white px-4 py-1 rounded-lg font-bold text-sm transition-colors border border-fuchsia-500 disabled:opacity-50"
+                >
+                  {isUpdating ? 'SAVING...' : 'SET'}
+                </button>
+              </div>
             </div>
 
             <div className="bg-slate-950/80 rounded-xl border border-white/5 overflow-hidden h-[400px] flex flex-col">

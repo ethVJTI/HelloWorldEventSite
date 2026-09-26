@@ -18,7 +18,7 @@ function App() {
   });
 
   // Check for secret admin route
-  if (window.location.pathname === import.meta.env.VITE_ADMIN_ROUTE) {
+    if (window.location.pathname.toLowerCase() === import.meta.env.VITE_ADMIN_ROUTE?.toLowerCase()) {
     return <Admin />;
   }
 

@@ -25,6 +25,18 @@ export async function getDefaultPool() {
   return pool;
 }
 
+export async function updatePoolMaxMiners(poolId, maxMiners) {
+  const { data, error } = await supabase
+    .from('pools')
+    .update({ max_miners: maxMiners })
+    .eq('id', poolId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 /**
  * Registers a miner or fetches their existing session if already registered.
  */
