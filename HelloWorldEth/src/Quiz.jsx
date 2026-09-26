@@ -19,16 +19,15 @@ export default function Quiz({ minerData, onComplete }) {
   // Load questions for the current round
   useEffect(() => {
     async function loadQuestions() {
-      const roundData = JSON.parse(localStorage.getItem('pow_current_round') || '{}');
-      if (roundData.round_id) {
-        try {
-          const qs = await getRoundQuestions(roundData.round_id);
-          setQuestions(qs);
-        } catch (err) {
-          console.error("Failed to load questions:", err);
-        }
+      try {
+        const roundData = JSON.parse(localStorage.getItem('pow_current_round') || '{}');
+        const qs = await getRoundQuestions(roundData?.round_id);
+        setQuestions(qs);
+      } catch (err) {
+        console.error("Failed to load questions:", err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     }
     loadQuestions();
   }, []);

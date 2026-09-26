@@ -83,20 +83,20 @@ export async function startNewRound(poolId) {
     .from('questions')
     .select('id')
     .eq('is_active', true);
-    
+
   if (qError) throw qError;
-  
+
   // Shuffle and pick 5
-  const shuffled = allQuestions.sort(() => 0.5 - Math.random()).slice(0, 5);
+  const shuffled = (allQuestions || []).sort(() => 0.5 - Math.random()).slice(0, 5);
 
   // 3. Insert new round
   const { data: newRound, error } = await supabase
     .from('rounds')
-    .insert([{ 
-      pool_id: poolId, 
-      block_index: nextIndex, 
-      status: 'active', 
-      started_at: new Date().toISOString() 
+    .insert([{
+      pool_id: poolId,
+      block_index: nextIndex,
+      status: 'active',
+      started_at: new Date().toISOString()
     }])
     .select()
     .single();
@@ -109,7 +109,7 @@ export async function startNewRound(poolId) {
     question_id: q.id,
     order_index: idx + 1
   }));
-  
+
   if (roundQuestionsData.length > 0) {
     const { error: rqError } = await supabase
       .from('round_questions')
@@ -122,31 +122,70 @@ export async function startNewRound(poolId) {
 
 /**
  * Fetches the specific 5 questions bound to a round.
+ * Falls back to directly fetching active questions if round has no questions bound.
  */
 export async function getRoundQuestions(roundId) {
-  const { data, error } = await supabase
-    .from('round_questions')
-    .select(
-      id,
-      order_index,
-      questions (
+  let questions = [];
+
+  if (roundId) {
+    const { data, error } = await supabase
+      .from('round_questions')
+      .select(`
         id,
-        prompt,
-        options,
-        answer
-      )
-    )
-    .eq('round_id', roundId)
-    .order('order_index', { ascending: true });
+        order_index,
+        questions (
+          id,
+          prompt,
+          options,
+          answer
+        )
+      `)
+      .eq('round_id', roundId)
+      .order('order_index', { ascending: true });
 
-  if (error) throw error;
+    if (!error && data && data.length > 0) {
+      questions = data
+        .filter(rq => rq.questions)
+        .map(rq => ({
+          round_question_id: rq.id,
+          id: rq.questions.id,
+          prompt: rq.questions.prompt,
+          options: rq.questions.options || [],
+          answer: rq.questions.answer
+        }));
+    }
+  }
 
-  // Flatten the response
-  return data.map(rq => ({
-    round_question_id: rq.id,
-    id: rq.questions.id,
-    prompt: rq.questions.prompt,
-    options: rq.questions.options || [], // Will need an 'options' JSONB column in Postgres!
-    answer: rq.questions.answer
-  }));
+  // Fallback: If this round has 0 questions bound, fetch 5 active questions directly!
+  if (questions.length === 0) {
+    const { data: directQs } = await supabase
+      .from('questions')
+      .select('id, prompt, options, answer')
+      .eq('is_active', true)
+      .limit(5);
+
+    if (directQs && directQs.length > 0) {
+      questions = directQs.map(q => ({
+        id: q.id,
+        prompt: q.prompt,
+        options: q.options || [],
+        answer: q.answer
+      }));
+    }
+  }
+
+  // Guarantee every question has 4 valid options for the MCQ buttons
+  return questions.map(q => {
+    let opts = Array.isArray(q.options) && q.options.length > 0 ? [...q.options] : [];
+    if (opts.length === 0) {
+      const ansNum = parseInt(q.answer, 10);
+      if (!isNaN(ansNum)) {
+        opts = [q.answer, (ansNum + 4).toString(), (ansNum - 3).toString(), (ansNum + 10).toString()];
+      } else {
+        opts = [q.answer, 'Option A', 'Option B', 'Option C'];
+      }
+      opts.sort(() => 0.5 - Math.random());
+    }
+    return { ...q, options: opts };
+  });
 }
