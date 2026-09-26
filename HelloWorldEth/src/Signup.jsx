@@ -1,29 +1,44 @@
 import React, { useState, useEffect } from 'react';
-import { getDefaultPool, registerMiner } from './utils/api';
-import { useMempool } from './hooks/useMempool';
+import { getDefaultPool, registerMiner, prefetchCompletedMiners, isMinerCachedAsCompleted } from './utils/api';
 
-export default function Signup({ onConnect }) {
+export default function Signup({ onConnect, miners: propMiners = [], poolConfig: propPoolConfig = { maxMiners: 10 } }) {
   const [mounted, setMounted] = useState(false);
   const [name, setName] = useState('');
   const [regNo, setRegNo] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Passively listen to mempool to check if it's full
-  const { miners, poolConfig } = useMempool(null, null, false, true); // isPassive = true
-  
+  const miners = propMiners || [];
+  const maxMiners = propPoolConfig?.maxMiners || 10;
   const currentCount = miners.length;
-  const maxMiners = poolConfig.maxMiners || 10;
   const isPoolFull = currentCount >= maxMiners;
 
   useEffect(() => {
     setMounted(true);
+    // Warm up the completed miners cache in the background (1 query for all students)
+    prefetchCompletedMiners();
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name.trim() || !regNo.trim()) return;
+    const trimmedName = name.trim();
+    const trimmedRegNo = regNo.trim();
+
+    if (!trimmedName || !trimmedRegNo) return;
     
+    // Strict Registration Number Validation: exactly 9 digits, starting with 2
+    const regNoRegex = /^2\d{8}$/;
+    if (!regNoRegex.test(trimmedRegNo)) {
+      setError("Registration number must be exactly 9 digits and start with 2 (e.g. 241080042).");
+      return;
+    }
+
+    // Instant Zero-Database Check: checks in-memory Set & localStorage first
+    if (isMinerCachedAsCompleted(trimmedRegNo)) {
+      setError(`Registration number ${trimmedRegNo} has already completed the mining quiz! Each candidate is allowed only one attempt.`);
+      return;
+    }
+
     if (isPoolFull) {
       setError("The Mempool is currently full. Please wait for the next block.");
       return;
@@ -35,14 +50,14 @@ export default function Signup({ onConnect }) {
       // 1. Get the active pool
       const pool = await getDefaultPool();
       
-      // 2. Register the miner (or fetch existing session)
-      const miner = await registerMiner(pool.id, name.trim(), regNo.trim());
+      // 2. Register the miner (enforces single-play per registration number)
+      const miner = await registerMiner(pool.id, trimmedName, trimmedRegNo);
       
       // 3. Pass the full miner data up to App state
       if (onConnect) onConnect(miner);
     } catch (err) {
       console.error(err);
-      setError("Failed to connect to the network. Please try again.");
+      setError(err.message || "Failed to connect to the network. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -96,13 +111,19 @@ export default function Signup({ onConnect }) {
             type="text" 
             id="regNo"
             value={regNo}
-            onChange={(e) => setRegNo(e.target.value)}
-            placeholder="e.g. 2310700XX" 
-            className="w-full bg-slate-950/80 border border-purple-800/50 rounded-xl px-4 py-3 text-white placeholder-purple-200/30 focus:outline-none focus:border-fuchsia-400 focus:ring-1 focus:ring-fuchsia-400 transition-all"
+            onChange={(e) => {
+              const val = e.target.value.replace(/\D/g, '').slice(0, 9);
+              setRegNo(val);
+              if (error) setError(null);
+            }}
+            placeholder="e.g. 241080042" 
+            maxLength={9}
+            pattern="2[0-9]{8}"
+            className="w-full bg-slate-950/80 border border-purple-800/50 rounded-xl px-4 py-3 text-white placeholder-purple-200/30 focus:outline-none focus:border-fuchsia-400 focus:ring-1 focus:ring-fuchsia-400 transition-all font-mono"
             required
             disabled={loading || isPoolFull}
           />
-          <p className="text-xs text-purple-200/40 ml-1">Used for unique verification.</p>
+          <p className="text-xs text-purple-200/40 ml-1">9-digit number starting with 2. Single attempt only.</p>
         </div>
 
         {isPoolFull && (
@@ -112,9 +133,9 @@ export default function Signup({ onConnect }) {
           </div>
         )}
 
-        {error && !isPoolFull && (
-          <div className="text-red-400 text-sm text-center bg-red-900/20 p-2 rounded-lg border border-red-900/50">
-            {error}
+        {error && (
+          <div className="text-red-400 text-sm text-center bg-red-900/25 p-3 rounded-xl border border-red-800/60 leading-relaxed">
+            ⚠️ {error}
           </div>
         )}
 
@@ -124,10 +145,10 @@ export default function Signup({ onConnect }) {
           className={`w-full mt-4 py-4 rounded-xl font-bold tracking-wide transition-all duration-300 border flex justify-center items-center gap-2 ${
             isPoolFull 
               ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed' 
-              : 'bg-gradient-to-r from-purple-700 to-purple-500 hover:from-purple-600 hover:to-purple-400 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)] hover:shadow-[0_0_25px_rgba(168,85,247,0.6)] transform hover:-translate-y-1 border-purple-400/50 disabled:opacity-50 disabled:cursor-not-allowed'
+              : 'bg-gradient-to-r from-purple-700 to-purple-500 hover:from-purple-600 hover:to-purple-400 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)] hover:shadow-[0_0_25px_rgba(168,85,247,0.6)] transform hover:-translate-y-1 border-purple-400/50 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer'
           }`}
         >
-          {loading ? 'CONNECTING...' : isPoolFull ? 'POOL AT CAPACITY' : '[ CONNECT NODE ]'}
+          {loading ? 'AUTHENTICATING...' : isPoolFull ? 'POOL AT CAPACITY' : '[ CONNECT NODE ]'}
         </button>
 
       </form>

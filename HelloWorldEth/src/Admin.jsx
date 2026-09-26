@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useMempool } from './hooks/useMempool';
-import { getDefaultPool, startNewRound, updatePoolMaxMiners } from './utils/api';
+import { getDefaultPool, startNewRound, updatePoolMaxMiners, abortActiveRound } from './utils/api';
 
 export default function Admin() {
   const { miners, channel, updateAdminConfig } = useMempool(null, null, true); // true = isAdmin
@@ -8,6 +8,7 @@ export default function Admin() {
   const [broadcasting, setBroadcasting] = useState(false);
   const [pool, setPool] = useState(null);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [actionMessage, setActionMessage] = useState(null);
 
   useEffect(() => {
     getDefaultPool().then(p => {
@@ -24,14 +25,14 @@ export default function Admin() {
     setIsUpdating(true);
     try {
       await updatePoolMaxMiners(pool.id, Number(maxMiners));
-      // Still broadcast it over socket for instant UI updates for currently connected clients
       if (updateAdminConfig) {
         updateAdminConfig({ maxMiners: Number(maxMiners) });
       }
-      alert('Max miners updated in database!');
+      setActionMessage('Max miners saved to database & network updated!');
+      setTimeout(() => setActionMessage(null), 3000);
     } catch (err) {
       console.error(err);
-      alert('Failed to update max miners. Did you add the max_miners column to the pools table?');
+      alert('Failed to update max miners: ' + err.message);
     } finally {
       setIsUpdating(false);
     }
@@ -53,14 +54,36 @@ export default function Admin() {
           block_index: round.block_index
         },
       });
+
+      setActionMessage(`Block #${round.block_index} broadcasted to all miners!`);
+      setTimeout(() => setActionMessage(null), 4000);
     } catch (err) {
       console.error("Failed to start round:", err);
-      alert("Error starting round. Check console.");
-    }
-    
-    setTimeout(() => {
+      alert("Error starting round: " + err.message);
+    } finally {
       setBroadcasting(false);
-    }, 2000);
+    }
+  };
+
+  const handleAbortRound = async () => {
+    if (!pool) return;
+    if (!window.confirm("Are you sure you want to abort the current round?")) return;
+
+    try {
+      await abortActiveRound(pool.id);
+      if (channel) {
+        await channel.send({
+          type: 'broadcast',
+          event: 'ABORT_ROUND',
+          payload: { timestamp: Date.now() }
+        });
+      }
+      setActionMessage("Active round has been aborted.");
+      setTimeout(() => setActionMessage(null), 3000);
+    } catch (err) {
+      console.error("Failed to abort round:", err);
+      alert("Error aborting round: " + err.message);
+    }
   };
 
   return (
@@ -83,6 +106,12 @@ export default function Admin() {
             <span className="text-sm font-semibold tracking-wider text-purple-200">NETWORK LIVE</span>
           </div>
         </header>
+
+        {actionMessage && (
+          <div className="mb-6 p-4 rounded-xl bg-purple-900/40 border border-purple-500/50 text-purple-200 text-sm font-semibold text-center animate-fade-in">
+            {actionMessage}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
@@ -116,10 +145,9 @@ export default function Admin() {
             </div>
 
             <div className="bg-slate-950/80 rounded-xl border border-white/5 overflow-hidden h-[400px] flex flex-col">
-              <div className="grid grid-cols-4 gap-4 p-4 border-b border-purple-900/30 bg-purple-900/10 text-xs uppercase tracking-wider text-purple-300 font-semibold">
+              <div className="grid grid-cols-3 gap-4 p-4 border-b border-purple-900/30 bg-purple-900/10 text-xs uppercase tracking-wider text-purple-300 font-semibold">
                 <div className="col-span-2">Miner Name</div>
-                <div>Reg No</div>
-                <div className="text-right">Action</div>
+                <div className="text-right">Reg No</div>
               </div>
               <div className="overflow-y-auto p-2 flex-grow custom-scrollbar">
                 {miners.length === 0 ? (
@@ -128,14 +156,9 @@ export default function Admin() {
                   </div>
                 ) : (
                   miners.map((m, i) => (
-                    <div key={m.regNo || i} className="grid grid-cols-4 gap-4 p-3 items-center hover:bg-white/5 rounded-lg transition-colors border-b border-white/5 last:border-0">
+                    <div key={m.regNo || i} className="grid grid-cols-3 gap-4 p-3 items-center hover:bg-white/5 rounded-lg transition-colors border-b border-white/5 last:border-0">
                       <div className="col-span-2 font-medium text-purple-100 truncate">{m.name}</div>
-                      <div className="font-mono text-xs text-purple-300/60">{m.regNo}</div>
-                      <div className="text-right">
-                        <button className="text-xs bg-red-900/20 hover:bg-red-900/40 text-red-400 px-3 py-1 rounded border border-red-900/50 transition-colors">
-                          KICK
-                        </button>
-                      </div>
+                      <div className="font-mono text-xs text-purple-300/60 text-right">{m.regNo}</div>
                     </div>
                   ))
                 )}
@@ -157,7 +180,7 @@ export default function Admin() {
                     ? 'bg-fuchsia-600 border-fuchsia-400 text-white shadow-[0_0_40px_rgba(217,70,239,0.8)] scale-95' 
                     : miners.length === 0 
                       ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
-                      : 'bg-gradient-to-br from-fuchsia-600 to-purple-600 border-fuchsia-400 text-white shadow-[0_0_30px_rgba(217,70,239,0.5)] hover:shadow-[0_0_50px_rgba(217,70,239,0.8)] hover:scale-105'
+                      : 'bg-gradient-to-br from-fuchsia-600 to-purple-600 border-fuchsia-400 text-white shadow-[0_0_30px_rgba(217,70,239,0.5)] hover:shadow-[0_0_50px_rgba(217,70,239,0.8)] hover:scale-105 cursor-pointer'
                 }`}
               >
                 {broadcasting ? 'BROADCASTING...' : 'BROADCAST BLOCK'}
@@ -167,11 +190,11 @@ export default function Admin() {
             <div className="bg-slate-900/50 rounded-2xl border border-red-900/30 p-6 backdrop-blur-sm">
               <h2 className="text-sm font-bold text-red-400 mb-4 uppercase tracking-wider">Emergency Stops</h2>
               <div className="flex flex-col gap-3">
-                <button className="w-full py-3 bg-red-950/40 hover:bg-red-900/60 border border-red-900/50 text-red-300 rounded-xl text-sm font-semibold transition-colors">
+                <button 
+                  onClick={handleAbortRound}
+                  className="w-full py-3 bg-red-950/40 hover:bg-red-900/60 border border-red-900/50 text-red-300 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
+                >
                   ABORT ROUND
-                </button>
-                <button className="w-full py-3 bg-red-950/40 hover:bg-red-900/60 border border-red-900/50 text-red-300 rounded-xl text-sm font-semibold transition-colors">
-                  RESET LEADERBOARD
                 </button>
               </div>
             </div>

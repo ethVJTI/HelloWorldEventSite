@@ -1,18 +1,7 @@
-import React, { useEffect } from 'react';
-import { useMempool } from './hooks/useMempool';
+import React from 'react';
 
-export default function Mempool({ minerData, onQuizStart }) {
-  // Use our real-time presence hook
-  const { miners, gameState, poolConfig } = useMempool(minerData?.name, minerData?.registration_number);
-  
-  // Transition automatically when the admin broadcasts the start event
-  useEffect(() => {
-    if (gameState === 'quiz_started' && onQuizStart) {
-      onQuizStart();
-    }
-  }, [gameState, onQuizStart]);
-
-  const maxMiners = poolConfig.maxMiners || 10;
+export default function Mempool({ minerData, miners = [], poolConfig = { maxMiners: 10 } }) {
+  const maxMiners = poolConfig?.maxMiners || 10;
   const currentCount = miners.length;
 
   return (
@@ -47,17 +36,17 @@ export default function Mempool({ minerData, onQuizStart }) {
         </div>
 
         {/* List of miners */}
-        <ul className="flex flex-col gap-3 max-h-[40vh] overflow-y-auto pr-2">
+        <ul className="flex flex-col gap-3 max-h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
           {miners.map((m, index) => (
-            <li key={m.regNo || index} className="flex items-center gap-3 bg-slate-950/50 p-3 rounded-xl border border-white/5 transition-all animate-fade-in">
+            <li key={m.regNo || m.id || index} className="flex items-center gap-3 bg-slate-950/50 p-3 rounded-xl border border-white/5 transition-all animate-fade-in">
               <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-800 to-fuchsia-900 flex items-center justify-center text-sm font-bold text-white border border-purple-500/30 shadow-inner">
-                {m.name.charAt(0).toUpperCase()}
+                {m.name?.charAt(0).toUpperCase()}
               </div>
               <div className="flex flex-col">
                 <span className="text-white text-sm font-medium">{m.name}</span>
                 <span className="text-purple-400/50 text-xs font-mono">{m.regNo}</span>
               </div>
-              {m.regNo === minerData?.registration_number && (
+              {m.regNo === (minerData?.registration_number || minerData?.regNo) && (
                 <span className="ml-auto text-[10px] uppercase tracking-widest text-fuchsia-400 bg-fuchsia-900/30 px-2 py-1 rounded-md border border-fuchsia-500/20">You</span>
               )}
             </li>
