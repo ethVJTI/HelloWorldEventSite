@@ -2,8 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { useMempool } from './hooks/useMempool';
 import { getDefaultPool, startNewRound, updatePoolMaxMiners, abortActiveRound } from './utils/api';
 
+// Configurable admin passcode (or fallback secure workshop passcode)
+const EXPECTED_PASSCODE = import.meta.env.VITE_ADMIN_PASSCODE || 'ethVJTI@2026';
+
 export default function Admin() {
-  const { miners, channel, updateAdminConfig } = useMempool(null, null, true); // true = isAdmin
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return sessionStorage.getItem('pow_admin_authenticated') === 'true';
+  });
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [authError, setAuthError] = useState(null);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [isLockedOut, setIsLockedOut] = useState(false);
+
+  // Initialize mempool hook only when authenticated to prevent unauthorized presence monitoring
+  const { miners, channel, updateAdminConfig } = useMempool(null, null, isAuthenticated);
   const [maxMiners, setMaxMiners] = useState(10);
   const [broadcasting, setBroadcasting] = useState(false);
   const [pool, setPool] = useState(null);
@@ -11,14 +23,48 @@ export default function Admin() {
   const [actionMessage, setActionMessage] = useState(null);
 
   useEffect(() => {
-    getDefaultPool().then(p => {
-      setPool(p);
-      if (p.max_miners) {
-        setMaxMiners(p.max_miners);
-        if (updateAdminConfig) updateAdminConfig({ maxMiners: p.max_miners });
+    if (isAuthenticated) {
+      getDefaultPool().then(p => {
+        setPool(p);
+        if (p?.max_miners) {
+          setMaxMiners(p.max_miners);
+          if (updateAdminConfig) updateAdminConfig({ maxMiners: p.max_miners });
+        }
+      }).catch(console.error);
+    }
+  }, [isAuthenticated]);
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (isLockedOut) return;
+
+    if (passcodeInput === EXPECTED_PASSCODE) {
+      sessionStorage.setItem('pow_admin_authenticated', 'true');
+      setIsAuthenticated(true);
+      setAuthError(null);
+      setFailedAttempts(0);
+    } else {
+      const nextFailed = failedAttempts + 1;
+      setFailedAttempts(nextFailed);
+      if (nextFailed >= 5) {
+        setIsLockedOut(true);
+        setAuthError("Too many failed attempts. Locked out for 30 seconds.");
+        setTimeout(() => {
+          setIsLockedOut(false);
+          setFailedAttempts(0);
+          setAuthError(null);
+        }, 30000);
+      } else {
+        setAuthError(`Invalid passcode. Attempts remaining: ${5 - nextFailed}`);
       }
-    }).catch(console.error);
-  }, []);
+    }
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('pow_admin_authenticated');
+    setIsAuthenticated(false);
+    setPasscodeInput('');
+  };
 
   const handleSetMaxMiners = async () => {
     if (!pool) return;
@@ -86,6 +132,56 @@ export default function Admin() {
     }
   };
 
+  // 1. Authentication Gate: If unauthenticated, show passcode modal
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex items-center justify-center p-6 selection:bg-purple-500/30">
+        <div className="absolute inset-0 cyber-grid-bg z-0 opacity-40 pointer-events-none"></div>
+
+        <div className="relative z-10 w-full max-w-md bg-slate-900/80 border border-purple-800/50 p-8 rounded-3xl backdrop-blur-xl shadow-2xl animate-fade-in">
+          <div className="flex flex-col items-center mb-6 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-purple-950/80 border border-purple-500/40 flex items-center justify-center text-2xl shadow-inner mb-3">
+              🔒
+            </div>
+            <h2 className="text-2xl font-black text-white">Admin Authentication</h2>
+            <p className="text-purple-300/60 font-mono text-xs mt-1">Proof-of-Work Supervisor Console</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+            <div>
+              <label className="block text-xs font-mono text-purple-300 uppercase tracking-widest mb-1.5">
+                Supervisor Passcode
+              </label>
+              <input
+                type="password"
+                placeholder="Enter secret passcode..."
+                value={passcodeInput}
+                onChange={(e) => setPasscodeInput(e.target.value)}
+                disabled={isLockedOut}
+                className="w-full bg-slate-950 border border-purple-700/50 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-purple-400 font-mono text-sm shadow-inner"
+              />
+            </div>
+
+            {authError && (
+              <div className="text-xs font-mono text-red-400 bg-red-950/50 border border-red-500/40 p-2.5 rounded-xl text-center">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isLockedOut || !passcodeInput.trim()}
+              className="w-full py-3 bg-gradient-to-r from-purple-700 to-fuchsia-600 hover:from-purple-600 hover:to-fuchsia-500 text-white font-bold rounded-xl transition-all shadow-[0_0_20px_rgba(168,85,247,0.3)] disabled:opacity-50 cursor-pointer text-sm"
+            >
+              {isLockedOut ? 'LOCKED OUT' : '[ AUTHENTICATE ]'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Authenticated Admin Dashboard
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-8">
       <div className="absolute inset-0 cyber-grid-bg z-0 opacity-20 pointer-events-none"></div>
@@ -98,12 +194,20 @@ export default function Admin() {
             </h1>
             <p className="text-purple-300/60 mt-1 font-mono text-sm">PoW Pool Network Supervisor</p>
           </div>
-          <div className="flex items-center gap-4 bg-slate-900/80 px-4 py-2 rounded-xl border border-purple-500/20">
-            <span className="relative flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-fuchsia-500"></span>
-            </span>
-            <span className="text-sm font-semibold tracking-wider text-purple-200">NETWORK LIVE</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 bg-slate-900/80 px-4 py-2 rounded-xl border border-purple-500/20">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-fuchsia-500"></span>
+              </span>
+              <span className="text-xs font-semibold tracking-wider text-purple-200">NETWORK LIVE</span>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="px-3 py-2 bg-red-950/60 hover:bg-red-900/80 border border-red-500/40 text-red-300 rounded-xl font-mono text-xs transition-colors cursor-pointer"
+            >
+              [ LOGOUT ]
+            </button>
           </div>
         </header>
 
@@ -139,67 +243,97 @@ export default function Admin() {
                   disabled={isUpdating}
                   className="bg-fuchsia-700 hover:bg-fuchsia-600 text-white px-4 py-1 rounded-lg font-bold text-sm transition-colors border border-fuchsia-500 disabled:opacity-50"
                 >
-                  {isUpdating ? 'SAVING...' : 'SET'}
+                  {isUpdating ? 'Saving...' : 'Set'}
                 </button>
               </div>
             </div>
 
-            <div className="bg-slate-950/80 rounded-xl border border-white/5 overflow-hidden h-[400px] flex flex-col">
-              <div className="grid grid-cols-3 gap-4 p-4 border-b border-purple-900/30 bg-purple-900/10 text-xs uppercase tracking-wider text-purple-300 font-semibold">
-                <div className="col-span-2">Miner Name</div>
-                <div className="text-right">Reg No</div>
-              </div>
-              <div className="overflow-y-auto p-2 flex-grow custom-scrollbar">
-                {miners.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-purple-300/30 italic">
-                    No miners currently in the pool.
-                  </div>
-                ) : (
-                  miners.map((m, i) => (
-                    <div key={m.regNo || i} className="grid grid-cols-3 gap-4 p-3 items-center hover:bg-white/5 rounded-lg transition-colors border-b border-white/5 last:border-0">
-                      <div className="col-span-2 font-medium text-purple-100 truncate">{m.name}</div>
-                      <div className="font-mono text-xs text-purple-300/60 text-right">{m.regNo}</div>
-                    </div>
-                  ))
-                )}
-              </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-purple-900/30 text-purple-400 font-mono text-sm">
+                    <th className="pb-3">Node Name</th>
+                    <th className="pb-3">Registration No</th>
+                    <th className="pb-3">Joined At</th>
+                    <th className="pb-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-purple-900/20 text-sm">
+                  {miners.length === 0 ? (
+                    <tr>
+                      <td colSpan="4" className="py-6 text-center text-purple-400/50 italic">
+                        No miners connected to the mempool yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    miners.map((m, idx) => (
+                      <tr key={m.regNo || m.id || idx} className="hover:bg-purple-900/10 transition-colors">
+                        <td className="py-3 font-medium text-white flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                          {m.name}
+                        </td>
+                        <td className="py-3 font-mono text-purple-300">{m.regNo}</td>
+                        <td className="py-3 text-purple-400 text-xs">
+                          {m.joinedAt ? new Date(m.joinedAt).toLocaleTimeString() : 'Just now'}
+                        </td>
+                        <td className="py-3">
+                          <span className="bg-emerald-950 border border-emerald-500/30 text-emerald-400 text-xs px-2 py-0.5 rounded-full font-mono">
+                            Ready
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 
-          <div className="col-span-1 flex flex-col gap-6">
-            
-            <div className="bg-slate-900/50 rounded-2xl border border-fuchsia-900/50 p-6 backdrop-blur-sm flex flex-col items-center justify-center text-center">
-              <h2 className="text-lg font-bold text-white mb-2">Network Control</h2>
-              <p className="text-sm text-purple-200/60 mb-8">Broadcast the next block to all connected nodes to begin the mining race.</p>
+          <div className="flex flex-col gap-6">
+            <div className="bg-slate-900/50 rounded-2xl border border-purple-900/30 p-6 backdrop-blur-sm">
+              <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                <span className="text-2xl">⚡</span> Round Control
+              </h2>
               
-              <button 
+              <p className="text-sm text-purple-200/70 mb-6 leading-relaxed">
+                Starting the round broadcasts transaction payload to all connected nodes and transitions them to the Proof of Work solving screen simultaneously.
+              </p>
+
+              <button
                 onClick={handleBroadcast}
-                disabled={broadcasting || miners.length === 0}
-                className={`w-full py-8 rounded-2xl font-black text-xl tracking-widest transition-all duration-300 border-2 ${
-                  broadcasting 
-                    ? 'bg-fuchsia-600 border-fuchsia-400 text-white shadow-[0_0_40px_rgba(217,70,239,0.8)] scale-95' 
-                    : miners.length === 0 
-                      ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
-                      : 'bg-gradient-to-br from-fuchsia-600 to-purple-600 border-fuchsia-400 text-white shadow-[0_0_30px_rgba(217,70,239,0.5)] hover:shadow-[0_0_50px_rgba(217,70,239,0.8)] hover:scale-105 cursor-pointer'
-                }`}
+                disabled={broadcasting}
+                className="w-full py-4 rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:from-fuchsia-500 hover:to-purple-500 text-white font-black tracking-wide transition-all shadow-[0_0_20px_rgba(217,70,239,0.3)] hover:shadow-[0_0_30px_rgba(217,70,239,0.5)] transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed text-base cursor-pointer"
               >
-                {broadcasting ? 'BROADCASTING...' : 'BROADCAST BLOCK'}
+                {broadcasting ? 'BROADCASTING...' : 'START ROUND (BROADCAST)'}
+              </button>
+
+              <button
+                onClick={handleAbortRound}
+                className="w-full mt-3 py-2.5 rounded-xl bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 text-red-300 font-mono text-xs transition-all cursor-pointer"
+              >
+                [ ABORT CURRENT ROUND ]
               </button>
             </div>
 
-            <div className="bg-slate-900/50 rounded-2xl border border-red-900/30 p-6 backdrop-blur-sm">
-              <h2 className="text-sm font-bold text-red-400 mb-4 uppercase tracking-wider">Emergency Stops</h2>
-              <div className="flex flex-col gap-3">
-                <button 
-                  onClick={handleAbortRound}
-                  className="w-full py-3 bg-red-950/40 hover:bg-red-900/60 border border-red-900/50 text-red-300 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
+            <div className="bg-slate-900/50 rounded-2xl border border-purple-900/30 p-6 backdrop-blur-sm">
+              <h3 className="text-lg font-bold text-white mb-2">Display Projector Link</h3>
+              <p className="text-sm text-purple-200/70 mb-4">
+                Open this URL on the main projector screen in full screen:
+              </p>
+              <div className="bg-slate-950 p-3 rounded-lg border border-purple-900/50 font-mono text-xs text-purple-300 break-all select-all flex justify-between items-center">
+                <span>{window.location.origin}/display</span>
+                <a 
+                  href="/display" 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="ml-2 text-fuchsia-400 hover:underline"
                 >
-                  ABORT ROUND
-                </button>
+                  Open &rarr;
+                </a>
               </div>
             </div>
-
           </div>
+
         </div>
       </div>
     </div>

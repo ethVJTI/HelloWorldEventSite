@@ -11,6 +11,14 @@ node_modules
 dist
 dist-ssr
 *.local
+*.sql
+
+# Environment variables & secrets
+.env
+.env.*
+*.env.example
+*.env
+*.clearDatabase.js
 
 # Editor directories and files
 .vscode/*

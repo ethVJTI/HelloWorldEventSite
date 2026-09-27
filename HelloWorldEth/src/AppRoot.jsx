@@ -42,7 +42,7 @@ function ParticipantApp() {
   }, []);
 
   // Safely finish session and redirect participant to /null
-  const navigateToNull = () => {
+  const navigateToNull = (winReceipt = null) => {
     const reg = minerData?.registration_number || minerData?.regNo;
     const mId = minerData?.id;
     let rId = null;
@@ -59,6 +59,15 @@ function ParticipantApp() {
       finishMinerSession(mId, rId, reg);
     }
 
+    // Preserve victory receipt if present
+    let receiptToSave = winReceipt;
+    if (!receiptToSave) {
+      try {
+        const savedReceipt = sessionStorage.getItem('pow_win_receipt');
+        if (savedReceipt) receiptToSave = JSON.parse(savedReceipt);
+      } catch (_) {}
+    }
+
     // Purge credentials and cookies
     try {
       document.cookie.split(";").forEach((c) => {
@@ -67,6 +76,9 @@ function ParticipantApp() {
           .replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/");
       });
       sessionStorage.clear();
+      if (receiptToSave) {
+        sessionStorage.setItem('pow_win_receipt', JSON.stringify(receiptToSave));
+      }
       localStorage.removeItem('pow_miner');
       localStorage.removeItem('pow_current_round');
       localStorage.removeItem('pow_quiz_index');
@@ -88,10 +100,35 @@ function ParticipantApp() {
       // Admin aborted round
       setCurrentView('mempool');
     } else if (gameState === 'block_found' || winnerInfo) {
-      // Winner decided -> redirect all participants immediately to page null
-      navigateToNull();
+      // Check if current user is the winner
+      const isMe = minerData && winnerInfo && (
+        (winnerInfo.regNo && (winnerInfo.regNo === minerData.registration_number || winnerInfo.regNo === minerData.regNo)) ||
+        (winnerInfo.winner && winnerInfo.winner === minerData.name)
+      );
+
+      let hasLocalWinReceipt = false;
+      try {
+        const r = JSON.parse(sessionStorage.getItem('pow_win_receipt') || '{}');
+        if (r && r.isWinner) hasLocalWinReceipt = true;
+      } catch (_) {}
+
+      // If current miner is the winner, DO NOT REDIRECT! Stay in QuizView so winner can see their victory screen
+      if (isMe || hasLocalWinReceipt) {
+        return;
+      }
+
+      // If non-winner is currently solving in QuizView, QuizView's effect handles the 3-second notice
+      if (currentView === 'quiz') {
+        return;
+      }
+
+      // For miners in mempool or elsewhere, brief delay before redirecting
+      const t = setTimeout(() => {
+        navigateToNull();
+      }, 2500);
+      return () => clearTimeout(t);
     }
-  }, [gameState, currentView, winnerInfo]);
+  }, [gameState, currentView, winnerInfo, minerData]);
 
   // Persist view state only for active miner sessions (never persist 'null' or 'landing')
   useEffect(() => {
@@ -127,8 +164,8 @@ function ParticipantApp() {
     setCurrentView('mempool');
   };
 
-  const handleQuizComplete = () => {
-    navigateToNull();
+  const handleQuizComplete = (winReceipt = null) => {
+    navigateToNull(winReceipt);
   };
 
   return (

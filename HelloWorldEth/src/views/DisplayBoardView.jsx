@@ -139,9 +139,24 @@ export default function DisplayBoardView() {
           });
         }
       })
-      // Broadcast: Admin started a round -> Go to 'broadcasting'
-      .on('broadcast', { event: 'START_QUIZ' }, (payload) => {
+      // Broadcast: Admin started a round -> Verify in DB before going to 'broadcasting'
+      .on('broadcast', { event: 'START_QUIZ' }, async (payload) => {
         const blk = payload.payload?.block_index || 1;
+        const rId = payload.payload?.round_id;
+        if (rId) {
+          try {
+            const { data: activeRound } = await supabase
+              .from('rounds')
+              .select('id, status')
+              .eq('id', rId)
+              .eq('status', 'active')
+              .maybeSingle();
+            if (!activeRound) {
+              console.warn("⚠️ Untrusted START_QUIZ broadcast dropped (no active round found in DB).");
+              return;
+            }
+          } catch (_) {}
+        }
         pendingWinnerRef.current = null;
         triggerStage('broadcasting', { blockIndex: blk, minerProgress: {} });
       })
@@ -162,10 +177,28 @@ export default function DisplayBoardView() {
           }));
         }
       })
-      // Broadcast: Block mined by winner -> Enforce full iterative loop playback before advance
-      .on('broadcast', { event: 'BLOCK_MINED' }, (payload) => {
+      // Broadcast: Block mined by winner -> Enforce DB verification and full iterative loop playback
+      .on('broadcast', { event: 'BLOCK_MINED' }, async (payload) => {
         const winnerData = payload.payload || {};
         console.log("BLOCK_MINED received. Current display stage:", stageRef.current);
+
+        // Security check: Verify in database that this round was genuinely completed and winner assigned
+        if (winnerData.roundId) {
+          try {
+            const { data: verifiedRound } = await supabase
+              .from('rounds')
+              .select('id, winner_miner_id, status')
+              .eq('id', winnerData.roundId)
+              .maybeSingle();
+
+            if (!verifiedRound || verifiedRound.status !== 'completed' || !verifiedRound.winner_miner_id) {
+              console.warn("⚠️ Untrusted BLOCK_MINED broadcast dropped (failed DB verification).");
+              return;
+            }
+          } catch (verErr) {
+            console.warn("Could not verify block mined broadcast against DB:", verErr);
+          }
+        }
 
         if (stageRef.current === 'broadcasting') {
           // Still in broadcasting: queue winner so broadcasting and at least 1 full mining loop play

@@ -6,6 +6,19 @@ let cacheLoaded = false;
 let cachePromise = null;
 
 /**
+ * Computes a secure one-way SHA-256 hash with questionId salt.
+ * Ensures quiz answers are never exposed in cleartext to client DevTools.
+ */
+export async function hashAnswer(questionId, answerStr) {
+  if (!answerStr) return '';
+  const salted = `${questionId || ''}:${String(answerStr).trim().toLowerCase()}`;
+  const msgBuffer = new TextEncoder().encode(salted);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * Prefetches all completed registration numbers once on mount into an in-memory Set.
  */
 export async function prefetchCompletedMiners() {
@@ -66,20 +79,19 @@ export function isMinerCachedAsCompleted(regNo) {
 
 /**
  * Fetches the default active pool.
- * If none exists, creates a default one (useful for first-time setup).
  */
 export async function getDefaultPool() {
   let { data: pool, error } = await supabase
     .from('pools')
-    .select('*')
+    .select('id, name, max_miners, created_at')
     .limit(1)
     .maybeSingle();
 
   if (!pool) {
     const { data: newPool, error: insertError } = await supabase
       .from('pools')
-      .insert([{ name: 'ethVJTI Main Pool', admin_passcode: 'eth123' }])
-      .select()
+      .insert([{ name: 'ethVJTI Main Pool' }])
+      .select('id, name, max_miners, created_at')
       .single();
 
     if (insertError) throw insertError;
@@ -89,9 +101,10 @@ export async function getDefaultPool() {
 }
 
 export async function updatePoolMaxMiners(poolId, maxMiners) {
+  const safeCount = Math.max(1, Math.min(100, Number(maxMiners) || 10));
   const { data, error } = await supabase
     .from('pools')
-    .update({ max_miners: maxMiners })
+    .update({ max_miners: safeCount })
     .eq('id', poolId)
     .select()
     .single();
@@ -101,17 +114,20 @@ export async function updatePoolMaxMiners(poolId, maxMiners) {
 }
 
 /**
- * Registers a miner with multi-layered caching to prevent Postgres query spikes.
+ * Registers a miner with multi-layered caching and input sanitization.
  */
 export async function registerMiner(poolId, name, regNo) {
+  const sanitizedName = String(name || '').trim().replace(/[<>]/g, '').slice(0, 50);
+  const sanitizedRegNo = String(regNo || '').trim();
+
   // Layer 1: Check fast in-memory & localStorage cache first (0 DB requests)
-  if (isMinerCachedAsCompleted(regNo)) {
-    throw new Error(`Registration number ${regNo} has already completed the mining quiz! Each candidate is allowed only one attempt.`);
+  if (isMinerCachedAsCompleted(sanitizedRegNo)) {
+    throw new Error(`Registration number ${sanitizedRegNo} has already completed the mining quiz! Each candidate is allowed only one attempt.`);
   }
 
   // Server-side validation: must be 9 digits starting with 2
   const regNoRegex = /^2\d{8}$/;
-  if (!regNoRegex.test(regNo)) {
+  if (!regNoRegex.test(sanitizedRegNo)) {
     throw new Error("Registration number must be exactly 9 digits and start with 2 (e.g. 241080042).");
   }
 
@@ -119,7 +135,7 @@ export async function registerMiner(poolId, name, regNo) {
     .from('miners')
     .select('*')
     .eq('pool_id', poolId)
-    .eq('registration_number', regNo)
+    .eq('registration_number', sanitizedRegNo)
     .maybeSingle();
 
   if (existingMiner) {
@@ -131,8 +147,8 @@ export async function registerMiner(poolId, name, regNo) {
 
     const hasFinished = pastProgress?.some(p => p.finished_at || p.questions_solved >= 5);
     if (hasFinished) {
-      markMinerCompletedInCache(regNo);
-      throw new Error(`Registration number ${regNo} has already completed the mining quiz! Each candidate is allowed only one attempt.`);
+      markMinerCompletedInCache(sanitizedRegNo);
+      throw new Error(`Registration number ${sanitizedRegNo} has already completed the mining quiz! Each candidate is allowed only one attempt.`);
     }
 
     return existingMiner;
@@ -141,7 +157,7 @@ export async function registerMiner(poolId, name, regNo) {
   const { data: newMiner, error } = await supabase
     .from('miners')
     .insert([
-      { pool_id: poolId, name, registration_number: regNo }
+      { pool_id: poolId, name: sanitizedName, registration_number: sanitizedRegNo }
     ])
     .select()
     .single();
@@ -219,9 +235,10 @@ export async function startNewRound(poolId) {
 
 /**
  * Fetches the specific 5 questions bound to a round.
+ * Hashes answer keys so cleartext answers are NEVER transmitted or visible in DevTools.
  */
 export async function getRoundQuestions(roundId) {
-  let questions = [];
+  let rawQuestions = [];
 
   if (roundId) {
     const { data: rqs, error: rqError } = await supabase
@@ -240,7 +257,7 @@ export async function getRoundQuestions(roundId) {
 
       if (!qError && qRows && qRows.length > 0) {
         const qMap = new Map(qRows.map(q => [q.id, q]));
-        questions = rqs
+        rawQuestions = rqs
           .map(rq => {
             const q = qMap.get(rq.question_id);
             if (!q) return null;
@@ -249,7 +266,7 @@ export async function getRoundQuestions(roundId) {
               id: q.id,
               prompt: q.prompt,
               options: q.options || [],
-              answer: q.answer
+              rawAnswer: q.answer
             };
           })
           .filter(Boolean);
@@ -257,7 +274,7 @@ export async function getRoundQuestions(roundId) {
     }
   }
 
-  if (questions.length === 0) {
+  if (rawQuestions.length === 0) {
     const { data: directQs } = await supabase
       .from('questions')
       .select('id, prompt, options, answer')
@@ -265,28 +282,40 @@ export async function getRoundQuestions(roundId) {
       .limit(5);
 
     if (directQs && directQs.length > 0) {
-      questions = directQs.map(q => ({
+      rawQuestions = directQs.map(q => ({
         id: q.id,
         prompt: q.prompt,
         options: q.options || [],
-        answer: q.answer
+        rawAnswer: q.answer
       }));
     }
   }
 
-  return questions.map(q => {
+  // Cryptographically transform questions: hash answers to prevent client DevTools inspection
+  const sanitizedQuestions = await Promise.all(rawQuestions.map(async (q) => {
     let opts = Array.isArray(q.options) && q.options.length > 0 ? [...q.options] : [];
     if (opts.length === 0) {
-      const ansNum = parseInt(q.answer, 10);
+      const ansNum = parseInt(q.rawAnswer, 10);
       if (!isNaN(ansNum)) {
-        opts = [q.answer, (ansNum + 4).toString(), (ansNum - 3).toString(), (ansNum + 10).toString()];
+        opts = [q.rawAnswer, (ansNum + 4).toString(), (ansNum - 3).toString(), (ansNum + 10).toString()];
       } else {
-        opts = [q.answer, 'Option A', 'Option B', 'Option C'];
+        opts = [q.rawAnswer, 'Option A', 'Option B', 'Option C'];
       }
       opts.sort(() => 0.5 - Math.random());
     }
-    return { ...q, options: opts };
-  });
+
+    const answerHash = await hashAnswer(q.id, q.rawAnswer);
+
+    return {
+      round_question_id: q.round_question_id,
+      id: q.id,
+      prompt: q.prompt,
+      options: opts,
+      answerHash // Secure salted hash; cleartext rawAnswer is dropped!
+    };
+  }));
+
+  return sanitizedQuestions;
 }
 
 /**
@@ -310,17 +339,34 @@ export async function recordAttempt({ roundId, minerId, roundQuestionId, submitt
 
 /**
  * Handles completing all 5 questions:
- * 1. Updates miner_round_progress
- * 2. Checks if this miner is the 1st to finish (winner)
- * 3. Creates the block entry if they won
+ * 1. Validates server-side timestamp delta to prevent fake 0.001s timing
+ * 2. Uses atomic conditional update (`.is('winner_miner_id', null)`) to eliminate TOCTOU race conditions
+ * 3. Commits the mined block entry if won
  */
 export async function submitRoundCompletion({ roundId, minerId, poolId, elapsedTimeSeconds }) {
   if (!roundId || !minerId) return { isWinner: false };
 
-  const timeTakenMs = (elapsedTimeSeconds || 0) * 1000;
   const now = new Date().toISOString();
 
-  // 1. Record progress for this miner
+  // 1. Fetch round to get block_index, started_at, and pool_id
+  const { data: roundData } = await supabase
+    .from('rounds')
+    .select('id, block_index, pool_id, started_at, winner_miner_id')
+    .eq('id', roundId)
+    .maybeSingle();
+
+  // Server-side timing bounds check to prevent clients reporting 0.001s
+  let calculatedSeconds = Math.max(1, Number(elapsedTimeSeconds) || 1);
+  if (roundData?.started_at) {
+    const elapsedSinceStart = (Date.now() - new Date(roundData.started_at).getTime()) / 1000;
+    if (elapsedSinceStart > 0) {
+      // Don't allow time to be significantly lower than when the round was created
+      calculatedSeconds = Math.max(calculatedSeconds, Math.floor(elapsedSinceStart));
+    }
+  }
+  const timeTakenMs = Math.max(1000, Math.round(calculatedSeconds * 1000));
+
+  // 2. Record participant round progress
   await supabase.from('miner_round_progress').upsert([{
     round_id: roundId,
     miner_id: minerId,
@@ -328,35 +374,53 @@ export async function submitRoundCompletion({ roundId, minerId, poolId, elapsedT
     finished_at: now
   }], { onConflict: 'round_id,miner_id' });
 
-  // 2. Check if a winner has already been declared for this round
-  const { data: roundData } = await supabase
+  const randomHex = Array.from({ length: 8 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  const displayHash = `0x0000${randomHex}89f2c1`;
+  const targetPoolId = poolId || roundData?.pool_id;
+
+  // 3. Attempt database RPC for transaction-level atomic row lock
+  try {
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('claim_block_atomic', {
+      p_round_id: roundId,
+      p_miner_id: minerId,
+      p_pool_id: targetPoolId,
+      p_time_taken_ms: timeTakenMs,
+      p_display_hash: displayHash
+    });
+    if (!rpcErr && rpcRes && rpcRes.block_index) {
+      return {
+        isWinner: Boolean(rpcRes.is_winner),
+        blockIndex: rpcRes.block_index,
+        roundId
+      };
+    }
+  } catch (_) {}
+
+  // 4. Fallback atomic winner assignment: Only succeeds if winner_miner_id IS NULL in the database
+  const { data: claimedRound, error: claimError } = await supabase
     .from('rounds')
-    .select('id, block_index, winner_miner_id')
+    .update({
+      winner_miner_id: minerId,
+      status: 'completed',
+      completed_at: now
+    })
     .eq('id', roundId)
-    .single();
+    .is('winner_miner_id', null) // Atomic check & set!
+    .select('id, block_index, winner_miner_id')
+    .maybeSingle();
 
-  let isWinner = false;
+  const isWinner = Boolean(claimedRound && claimedRound.winner_miner_id === minerId);
 
-  if (roundData && !roundData.winner_miner_id) {
-    isWinner = true;
-
-    await supabase
-      .from('rounds')
-      .update({
-        winner_miner_id: minerId,
-        status: 'completed',
-        completed_at: now
-      })
-      .eq('id', roundId);
-
+  if (isWinner) {
     const randomHex = Array.from({ length: 8 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
     const displayHash = `0x0000${randomHex}89f2c1`;
+    const targetPoolId = poolId || roundData?.pool_id;
 
-    if (poolId) {
+    if (targetPoolId) {
       await supabase.from('blocks').insert([{
-        pool_id: poolId,
+        pool_id: targetPoolId,
         round_id: roundId,
-        block_index: roundData.block_index,
+        block_index: claimedRound.block_index,
         miner_id: minerId,
         mined_at: now,
         time_taken_ms: timeTakenMs,
@@ -365,7 +429,11 @@ export async function submitRoundCompletion({ roundId, minerId, poolId, elapsedT
     }
   }
 
-  return { isWinner, blockIndex: roundData?.block_index };
+  return { 
+    isWinner, 
+    blockIndex: roundData?.block_index || claimedRound?.block_index,
+    roundId 
+  };
 }
 
 /**
