@@ -9,12 +9,16 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "db:reset": "node scripts/clearDatabase.js",
+    "db:test": "node scripts/testDatabase.js",
+    "db:seed:questions": "node scripts/populateQuestions.js",
+    "terminate:tests": "node scripts/terminate_tests.js",
     "stress:test": "node scripts/stressTest.js",
     "stress:test:python": "python scripts/stress_test.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
     "framer-motion": "^13.4.4",
+    "katex": "^0.19.0",
     "lucide-react": "^1.48.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getRoundQuestions, recordAttempt, submitRoundCompletion, markMinerCompletedInCache, hashAnswer } from '../utils/api';
+import MathRenderer from '../components/MathRenderer';
 
 export default function QuizView({ minerData, sendBroadcast, winnerInfo, onReturnToMempool, onComplete }) {
   const [questions, setQuestions] = useState([]);
@@ -367,7 +368,7 @@ export default function QuizView({ minerData, sendBroadcast, winnerInfo, onRetur
           </div>
 
           <h3 className="text-xl md:text-2xl font-bold text-white mb-8 leading-snug">
-            {currentQ.prompt}
+            <MathRenderer>{currentQ.prompt}</MathRenderer>
           </h3>
 
           {/* Options */}
@@ -391,7 +392,9 @@ export default function QuizView({ minerData, sendBroadcast, winnerInfo, onRetur
                   disabled={status !== 'idle' || Boolean(winnerInfo) || Boolean(completionResult)}
                   className={`p-4 rounded-xl border text-left font-medium transition-all duration-200 cursor-pointer flex items-center justify-between group focus:outline-none focus:ring-0 select-none ${btnStyle}`}
                 >
-                  <span className="text-sm md:text-base leading-relaxed">{option}</span>
+                  <span className="text-sm md:text-base leading-relaxed">
+                    <MathRenderer>{option}</MathRenderer>
+                  </span>
                   <span className="text-xs font-mono opacity-40 group-hover:opacity-100 transition-opacity ml-2">
                     [{String.fromCharCode(65 + idx)}]
                   </span>

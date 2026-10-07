@@ -72,7 +72,7 @@ export default function Signup({ onConnect, miners: propMiners = [], poolConfig:
           <span className="text-3xl">🔌</span>
         </div>
         <h2 className="text-3xl font-extrabold tracking-tight text-white mb-2 text-center">
-          Join the Network
+          Click Here To Join
         </h2>
         <p className="text-purple-200/70 text-center text-sm">
           Authenticate your miner node to enter the mempool.

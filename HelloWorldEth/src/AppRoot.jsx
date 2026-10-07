@@ -240,7 +240,7 @@ function ParticipantApp() {
               }}
               className="w-full max-w-lg py-4 px-8 rounded-xl bg-gradient-to-r from-purple-700 to-purple-500 hover:from-purple-600 hover:to-purple-400 text-white font-bold text-lg tracking-wide transition-all duration-300 shadow-[0_0_20px_rgba(168,85,247,0.4)] hover:shadow-[0_0_30px_rgba(168,85,247,0.6)] animate-pulse-slow transform hover:-translate-y-1 border border-purple-400/50 cursor-pointer"
             >
-              {minerData ? '[ RESUME SESSION ]' : '[ ENTER THE NETWORK ]'}
+              {minerData ? '[ RESUME SESSION ]' : '[ CLICK TO JOIN THE NETWORK ]'}
             </button>
           </footer>
         </>

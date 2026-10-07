@@ -41,6 +41,7 @@ export default function DisplayBoardView() {
   const timerIntervalRef = useRef(null);
   const stageTimeoutRef = useRef(null);
   const pendingWinnerRef = useRef(null);
+  const pendingBlockRef = useRef(null);
   const miningStartTimeRef = useRef(0);
 
   // Dynamically obtain actual video clip duration or fallback
@@ -161,6 +162,8 @@ export default function DisplayBoardView() {
           } catch (_) {}
         }
         pendingWinnerRef.current = null;
+        pendingBlockRef.current = null;
+        setNewBlockId(null);
         triggerStage('broadcasting', { blockIndex: blk, minerProgress: {} });
       })
       // Broadcast: Student solved a question -> Update live progress bar
@@ -215,6 +218,7 @@ export default function DisplayBoardView() {
       // Broadcast: Admin aborted round -> return to 'idle'
       .on('broadcast', { event: 'ABORT_ROUND' }, () => {
         pendingWinnerRef.current = null;
+        pendingBlockRef.current = null;
         triggerStage('idle', {});
       });
 
@@ -249,7 +253,7 @@ export default function DisplayBoardView() {
     return () => clearTimeout(timer);
   }, [blocks, newBlockId]);
 
-  // Dedicated real-time handler to append newly mined block and advance display board
+  // Dedicated real-time handler to process newly mined block and advance display board
   const handleIncomingBlock = (winnerData) => {
     if (!winnerData) return;
     const winnerName = winnerData.winner || winnerData.minerName || winnerData.name || 'Anonymous Miner';
@@ -258,35 +262,61 @@ export default function DisplayBoardView() {
     const displayHash = winnerData.display_hash || winnerData.displayHash || `0x0000${Math.random().toString(16).slice(2, 10)}89f2`;
     const blockId = winnerData.id || `block-${blockIndex}-${Date.now()}`;
 
-    // 1. Immediately update blocks state and trigger 3D animation without reload
+    // Deduplicate: Don't add if already in ledger (by id or by positive block_index)
+    const exists = blocks.some((b) => 
+      (winnerData.id && b.id === winnerData.id) ||
+      (blockIndex > 0 && b.block_index === blockIndex)
+    );
+    if (exists) {
+      return;
+    }
+
+    // If this block is already queued and waiting for chain_append video to finish
+    if (
+      pendingBlockRef.current &&
+      (pendingBlockRef.current.block_index === blockIndex ||
+       (winnerData.id && pendingBlockRef.current.id === winnerData.id))
+    ) {
+      if (winnerData.id) {
+        pendingBlockRef.current.id = winnerData.id;
+      }
+      return;
+    }
+
+    // Queue the block to be appended into the blockchain ONLY AFTER chain_append.mp4 finishes
+    pendingBlockRef.current = {
+      id: blockId,
+      block_index: blockIndex,
+      display_hash: displayHash,
+      time_taken_ms: Math.round(timeTaken * 1000),
+      miners: { name: winnerName },
+    };
+
+    // Advance projector center stage to 'block_found' immediately
+    triggerStage('block_found', {
+      winnerName,
+      timeTaken,
+      blockIndex,
+    });
+  };
+
+  // Commit the pending block to the blockchain ledger and trigger 3D entry animation
+  const commitPendingBlock = () => {
+    if (!pendingBlockRef.current) return;
+    const blockToAdd = pendingBlockRef.current;
+    pendingBlockRef.current = null;
+
     setBlocks((prev) => {
-      // Deduplicate: Don't add if already in ledger (by id or by positive block_index)
       const exists = prev.some((b) => 
-        (winnerData.id && b.id === winnerData.id) ||
-        (blockIndex > 0 && b.block_index === blockIndex)
+        (blockToAdd.id && b.id === blockToAdd.id) ||
+        (blockToAdd.block_index > 0 && b.block_index === blockToAdd.block_index)
       );
       if (exists) {
         return prev;
       }
 
-      setNewBlockId(blockId);
-      return [
-        ...prev,
-        {
-          id: blockId,
-          block_index: blockIndex,
-          display_hash: displayHash,
-          time_taken_ms: Math.round(timeTaken * 1000),
-          miners: { name: winnerName },
-        },
-      ];
-    });
-
-    // 2. Advance projector center stage to 'block_found' immediately
-    triggerStage('block_found', {
-      winnerName,
-      timeTaken,
-      blockIndex,
+      setNewBlockId(blockToAdd.id);
+      return [...prev, blockToAdd];
     });
   };
 
@@ -295,6 +325,11 @@ export default function DisplayBoardView() {
   // 3. Stage Transitions & Auto-Advance with Full Video Loop Guarantee
   const triggerStage = (nextStage, data = {}) => {
     if (stageTimeoutRef.current) clearTimeout(stageTimeoutRef.current);
+
+    // If transitioning away from chain_append to idle, commit the block right as the video finishes
+    if (stageRef.current === 'chain_append' && nextStage === 'idle') {
+      commitPendingBlock();
+    }
 
     setStage(nextStage);
     stageRef.current = nextStage;
@@ -340,6 +375,7 @@ export default function DisplayBoardView() {
     } else if (nextStage === 'chain_append') {
       const dur = getVideoDurationMs('chain_append');
       stageTimeoutRef.current = setTimeout(() => {
+        commitPendingBlock();
         triggerStage('idle', {});
       }, dur);
     }
@@ -359,6 +395,7 @@ export default function DisplayBoardView() {
     } else if (stage === 'block_found') {
       triggerStage('chain_append');
     } else if (stage === 'chain_append') {
+      commitPendingBlock();
       triggerStage('idle', {});
     }
   };
@@ -385,7 +422,8 @@ export default function DisplayBoardView() {
           onLoadedData={handleVideoLoaded}
           onError={handleVideoError}
           onEnded={handleVideoEnded}
-          className={`w-full h-full object-cover transition-opacity duration-700 ${
+          style={{ transform: 'translateY(-20%)', height: 'calc(100% + 10%)' }}
+          className={`w-full object-cover transition-opacity duration-700 ${
             videoAvailable ? 'opacity-80' : 'opacity-0'
           }`}
         />
