@@ -480,58 +480,139 @@ export default function DisplayBoardView() {
           </div>
         )}
 
-        {/* STAGE 3: MINING (RACETRACK OVERLAY WITH SCROLL) */}
-        {stage === 'mining' && (
-          <div className="w-full flex flex-col items-center animate-fade-in max-h-full">
-            <div className="flex justify-between items-center w-full max-w-3xl mb-2 px-2">
-              <div className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full bg-red-500 animate-ping"></span>
-                <span className="font-mono text-fuchsia-400 text-xs font-bold tracking-widest">PROOF OF WORK IN PROGRESS</span>
-              </div>
-              <div className="font-mono text-2xl font-black text-white bg-slate-900/80 px-4 py-1 rounded-xl border border-fuchsia-500/40 shadow-[0_0_15px_rgba(217,70,239,0.4)]">
-                {formatSeconds(elapsedTimer)}
-              </div>
-            </div>
+        {/* STAGE 3: MINING (ADAPTIVE MULTI-COLUMN RACETRACK) */}
+        {stage === 'mining' && (() => {
+          // Merge presence miners and miners who broadcasted progress
+          const rosterMap = new Map();
+          (miners || []).forEach((m, idx) => {
+            const key = m.regNo || m.id || `miner-${idx}`;
+            rosterMap.set(key, {
+              id: m.id || key,
+              regNo: m.regNo || key,
+              name: m.name || `Miner #${idx + 1}`,
+              key,
+            });
+          });
 
-            <div className="w-full max-w-3xl bg-slate-900/80 p-4 rounded-2xl border border-purple-900/50 backdrop-blur-xl shadow-2xl flex flex-col gap-2">
-              <div className="text-[11px] font-mono font-bold text-purple-300 uppercase tracking-widest flex justify-between border-b border-white/10 pb-2">
-                <span>Active Mining Nodes ({miners.length})</span>
-                <span>Block Completion (5 Puzzles)</span>
+          Object.entries(stageData.minerProgress || {}).forEach(([key, prog]) => {
+            if (rosterMap.has(key)) {
+              const existing = rosterMap.get(key);
+              rosterMap.set(key, { ...existing, name: prog.name || existing.name, solved: prog.solved });
+            } else {
+              rosterMap.set(key, {
+                id: key,
+                regNo: key,
+                key,
+                name: prog.name || 'Miner',
+                solved: prog.solved,
+              });
+            }
+          });
+
+          const rosterList = Array.from(rosterMap.values()).map((m) => {
+            const solved = stageData.minerProgress[m.key]?.solved ?? stageData.minerProgress[m.id]?.solved ?? m.solved ?? 0;
+            return { ...m, solvedCount: solved };
+          });
+
+          // Sort leaders to the top so race leaders are always visible first
+          const sortedRoster = rosterList.sort((a, b) => b.solvedCount - a.solvedCount);
+
+          const gridColsClass =
+            sortedRoster.length > 12
+              ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+              : sortedRoster.length > 4
+              ? 'grid-cols-1 md:grid-cols-2'
+              : 'grid-cols-1';
+
+          return (
+            <div className="w-full flex flex-col items-center animate-fade-in max-h-full">
+              <div className="flex justify-between items-center w-full max-w-5xl mb-2 px-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-red-500 animate-ping"></span>
+                  <span className="font-mono text-fuchsia-400 text-xs font-bold tracking-widest">
+                    PROOF OF WORK CONSENSUS RACETRACK
+                  </span>
+                </div>
+                <div className="font-mono text-xl md:text-2xl font-black text-white bg-slate-900/80 px-4 py-1 rounded-xl border border-fuchsia-500/40 shadow-[0_0_15px_rgba(217,70,239,0.4)]">
+                  ⏱️ {formatSeconds(elapsedTimer)}
+                </div>
               </div>
 
-              {/* Strict Max Height ensures bottom chain is never cut in half */}
-              <div className="max-h-[38vh] overflow-y-auto pr-2 custom-scrollbar flex flex-col gap-2">
-                {miners.length === 0 ? (
-                  <div className="text-center text-purple-300/40 font-mono py-4 text-xs italic">No active miners detected in current round.</div>
-                ) : (
-                  miners.map((m, idx) => {
-                    const key = m.regNo || m.id;
-                    const solvedCount = stageData.minerProgress[key]?.solved ?? stageData.minerProgress[m.id]?.solved ?? 0;
-                    const pct = Math.min((solvedCount / 5) * 100, 100);
+              <div className="w-full max-w-5xl bg-slate-900/85 p-3 md:p-4 rounded-2xl border border-purple-800/50 backdrop-blur-xl shadow-2xl flex flex-col gap-2">
+                <div className="text-[11px] font-mono font-bold text-purple-300 uppercase tracking-widest flex justify-between border-b border-white/10 pb-2 px-1">
+                  <span>Active Mining Nodes ({sortedRoster.length})</span>
+                  <span>Target: 5 Cryptographic Puzzles</span>
+                </div>
 
-                    return (
-                      <div key={m.id || m.regNo || idx} className="flex flex-col gap-1">
-                        <div className="flex justify-between items-center text-xs font-semibold">
-                          <span className="text-white flex items-center gap-1.5 truncate max-w-[70%]">
-                            <span className="text-purple-400 font-mono text-[10px]">[{idx + 1}]</span>
-                            <span className="truncate">{m.name}</span>
-                          </span>
-                          <span className="font-mono text-[11px] text-fuchsia-300 font-bold">{solvedCount} / 5</span>
-                        </div>
-                        <div className="h-2.5 w-full bg-slate-950 rounded-full overflow-hidden border border-white/5 p-0.5 shadow-inner">
+                {/* Adaptive Scrollable Grid: Displays 20-30+ miners simultaneously without cutoffs */}
+                <div className="max-h-[44vh] overflow-y-auto pr-1.5 custom-scrollbar">
+                  {sortedRoster.length === 0 ? (
+                    <div className="text-center text-purple-300/40 font-mono py-6 text-xs italic">
+                      No active miners detected in current round.
+                    </div>
+                  ) : (
+                    <div className={`grid gap-2.5 ${gridColsClass}`}>
+                      {sortedRoster.map((m, idx) => {
+                        const solvedCount = m.solvedCount;
+                        const pct = Math.min((solvedCount / 5) * 100, 100);
+                        const isFinished = solvedCount >= 5;
+
+                        return (
                           <div
-                            className="h-full rounded-full bg-gradient-to-r from-purple-600 via-fuchsia-500 to-white transition-all duration-500 ease-out shadow-[0_0_10px_rgba(217,70,239,0.8)]"
-                            style={{ width: `${pct}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
+                            key={m.key || m.id || idx}
+                            className={`p-2.5 rounded-xl border transition-all ${
+                              isFinished
+                                ? 'bg-amber-950/40 border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+                                : solvedCount > 0
+                                ? 'bg-purple-950/35 border-purple-600/40 shadow-sm'
+                                : 'bg-slate-950/60 border-white/5'
+                            } flex flex-col gap-1.5`}
+                          >
+                            <div className="flex justify-between items-center text-xs font-semibold">
+                              <span className="text-white flex items-center gap-1.5 truncate max-w-[72%]">
+                                <span className="font-mono text-[10px] font-bold text-purple-400">
+                                  {idx === 0 && solvedCount > 0
+                                    ? '🥇'
+                                    : idx === 1 && solvedCount > 0
+                                    ? '🥈'
+                                    : idx === 2 && solvedCount > 0
+                                    ? '🥉'
+                                    : `#${idx + 1}`}
+                                </span>
+                                <span className="truncate text-[11px] font-medium text-slate-100">{m.name}</span>
+                              </span>
+                              <span
+                                className={`font-mono text-[10px] font-bold ${
+                                  isFinished
+                                    ? 'text-amber-300 font-black'
+                                    : solvedCount > 0
+                                    ? 'text-fuchsia-300'
+                                    : 'text-slate-500'
+                                }`}
+                              >
+                                {isFinished ? 'SOLVED 5/5' : `${solvedCount} / 5`}
+                              </span>
+                            </div>
+                            <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden border border-white/5 p-0.5 shadow-inner">
+                              <div
+                                className={`h-full rounded-full transition-all duration-500 ease-out ${
+                                  isFinished
+                                    ? 'bg-gradient-to-r from-amber-500 to-yellow-300 shadow-[0_0_10px_rgba(245,158,11,0.8)]'
+                                    : 'bg-gradient-to-r from-purple-600 via-fuchsia-500 to-white shadow-[0_0_8px_rgba(217,70,239,0.7)]'
+                                }`}
+                                style={{ width: `${pct}%` }}
+                              ></div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* STAGE 4: BLOCK FOUND (WINNER SPOTLIGHT) */}
         {stage === 'block_found' && (

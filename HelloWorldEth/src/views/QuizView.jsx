@@ -389,7 +389,7 @@ export default function QuizView({ minerData, sendBroadcast, winnerInfo, onRetur
                   key={idx}
                   onClick={() => handleOptionClick(option)}
                   disabled={status !== 'idle' || Boolean(winnerInfo) || Boolean(completionResult)}
-                  className={`p-4 rounded-xl border text-left font-medium transition-all duration-200 cursor-pointer flex items-center justify-between group ${btnStyle}`}
+                  className={`p-4 rounded-xl border text-left font-medium transition-all duration-200 cursor-pointer flex items-center justify-between group focus:outline-none focus:ring-0 select-none ${btnStyle}`}
                 >
                   <span className="text-sm md:text-base leading-relaxed">{option}</span>
                   <span className="text-xs font-mono opacity-40 group-hover:opacity-100 transition-opacity ml-2">

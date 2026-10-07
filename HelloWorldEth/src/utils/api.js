@@ -291,7 +291,7 @@ export async function getRoundQuestions(roundId) {
     }
   }
 
-  // Cryptographically transform questions: hash answers to prevent client DevTools inspection
+  // Cryptographically transform questions: hash answers and randomize options order
   const sanitizedQuestions = await Promise.all(rawQuestions.map(async (q) => {
     let opts = Array.isArray(q.options) && q.options.length > 0 ? [...q.options] : [];
     if (opts.length === 0) {
@@ -301,7 +301,12 @@ export async function getRoundQuestions(roundId) {
       } else {
         opts = [q.rawAnswer, 'Option A', 'Option B', 'Option C'];
       }
-      opts.sort(() => 0.5 - Math.random());
+    }
+
+    // Always shuffle options so the correct answer is randomly distributed across A, B, C, D
+    for (let i = opts.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [opts[i], opts[j]] = [opts[j], opts[i]];
     }
 
     const answerHash = await hashAnswer(q.id, q.rawAnswer);
