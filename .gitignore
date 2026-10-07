@@ -6,20 +6,19 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
+blockchain-demo
 node_modules
 dist
 dist-ssr
 *.local
 *.sql
+*/scripts/*
 
 # Environment variables & secrets
 .env
 .env.*
 *.env.example
 *.env
-*.clearDatabase.js
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

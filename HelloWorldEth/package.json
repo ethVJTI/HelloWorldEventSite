@@ -8,7 +8,9 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "db:reset": "node scripts/clearDatabase.js"
+    "db:reset": "node scripts/clearDatabase.js",
+    "stress:test": "node scripts/stressTest.js",
+    "stress:test:python": "python scripts/stress_test.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

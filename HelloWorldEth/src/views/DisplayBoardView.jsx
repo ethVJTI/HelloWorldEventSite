@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
 import { supabase } from '../utils/supabase';
 import { getDefaultPool } from '../utils/api';
 
@@ -32,8 +33,10 @@ export default function DisplayBoardView() {
   const [blocks, setBlocks] = useState([]);
   const [videoAvailable, setVideoAvailable] = useState(false);
   const [elapsedTimer, setElapsedTimer] = useState(0);
+  const [newBlockId, setNewBlockId] = useState(null);
 
   const videoRef = useRef(null);
+  const blockchainRef = useRef(null);
   const stageRef = useRef('idle');
   const timerIntervalRef = useRef(null);
   const stageTimeoutRef = useRef(null);
@@ -177,51 +180,37 @@ export default function DisplayBoardView() {
           }));
         }
       })
-      // Broadcast: Block mined by winner -> Enforce DB verification and full iterative loop playback
-      .on('broadcast', { event: 'BLOCK_MINED' }, async (payload) => {
+      // Broadcast: Block mined by winner -> React immediately in real-time
+      .on('broadcast', { event: 'BLOCK_MINED' }, (payload) => {
         const winnerData = payload.payload || {};
-        console.log("BLOCK_MINED received. Current display stage:", stageRef.current);
+        console.log("[DisplayBoard] Realtime BLOCK_MINED broadcast received:", winnerData);
+        handleIncomingBlock(winnerData);
+      })
+      // Supabase Postgres CDC: Catch real-time database block inserts immediately
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'blocks' }, async (payload) => {
+        console.log("⚡ [DisplayBoard] Realtime postgres_changes on 'blocks' INSERT received:", payload.new);
+        const row = payload.new;
+        if (!row) return;
 
-        // Security check: Verify in database that this round was genuinely completed and winner assigned
-        if (winnerData.roundId) {
+        let minerName = 'Miner';
+        if (row.miner_id) {
           try {
-            const { data: verifiedRound } = await supabase
-              .from('rounds')
-              .select('id, winner_miner_id, status')
-              .eq('id', winnerData.roundId)
+            const { data: m } = await supabase
+              .from('miners')
+              .select('name')
+              .eq('id', row.miner_id)
               .maybeSingle();
-
-            if (!verifiedRound || verifiedRound.status !== 'completed' || !verifiedRound.winner_miner_id) {
-              console.warn("⚠️ Untrusted BLOCK_MINED broadcast dropped (failed DB verification).");
-              return;
-            }
-          } catch (verErr) {
-            console.warn("Could not verify block mined broadcast against DB:", verErr);
-          }
+            if (m?.name) minerName = m.name;
+          } catch (_) {}
         }
 
-        if (stageRef.current === 'broadcasting') {
-          // Still in broadcasting: queue winner so broadcasting and at least 1 full mining loop play
-          pendingWinnerRef.current = winnerData;
-        } else if (stageRef.current === 'mining') {
-          // In mining: ensure at least one full loop of mining_loop.mp4 has played
-          const elapsed = Date.now() - miningStartTimeRef.current;
-          const minMiningLoop = getVideoDurationMs('mining');
-
-          if (elapsed < minMiningLoop) {
-            const remaining = minMiningLoop - elapsed;
-            console.log(`Delaying block_found by ${remaining}ms to complete at least one full mining loop.`);
-            if (stageTimeoutRef.current) clearTimeout(stageTimeoutRef.current);
-            stageTimeoutRef.current = setTimeout(() => {
-              executeBlockFound(winnerData);
-            }, remaining);
-          } else {
-            // Already completed at least one full loop
-            executeBlockFound(winnerData);
-          }
-        } else {
-          executeBlockFound(winnerData);
-        }
+        handleIncomingBlock({
+          id: row.id,
+          blockIndex: row.block_index,
+          display_hash: row.display_hash,
+          timeTaken: (row.time_taken_ms || 0) / 1000,
+          winner: minerName,
+        });
       })
       // Broadcast: Admin aborted round -> return to 'idle'
       .on('broadcast', { event: 'ABORT_ROUND' }, () => {
@@ -229,33 +218,79 @@ export default function DisplayBoardView() {
         triggerStage('idle', {});
       });
 
-    channel.subscribe();
+    channel.subscribe((status) => {
+      console.log("⚡ [DisplayBoard] Realtime channel status:", status);
+    });
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, []);
 
-  const executeBlockFound = (winnerData) => {
-    const { winner, timeTaken, blockIndex } = winnerData;
-    triggerStage('block_found', {
-      winnerName: winner || 'Anonymous Miner',
-      timeTaken: timeTaken || 0,
-      blockIndex: blockIndex || 1,
+  // Auto-scroll the 3D blockchain ledger when a new block is mined
+  useEffect(() => {
+    if (!newBlockId) return;
+
+    const timer = setTimeout(() => {
+      const container = blockchainRef.current;
+      if (!container) return;
+
+      const blockElements = container.querySelectorAll('.cube-wrapper-3d');
+      const lastBlock = blockElements[blockElements.length - 1];
+      if (lastBlock) {
+        lastBlock.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'end' });
+      }
+      container.scrollTo({
+        left: container.scrollWidth,
+        behavior: 'smooth',
+      });
+    }, 120);
+
+    return () => clearTimeout(timer);
+  }, [blocks, newBlockId]);
+
+  // Dedicated real-time handler to append newly mined block and advance display board
+  const handleIncomingBlock = (winnerData) => {
+    if (!winnerData) return;
+    const winnerName = winnerData.winner || winnerData.minerName || winnerData.name || 'Anonymous Miner';
+    const timeTaken = Number(winnerData.timeTaken) || ((winnerData.time_taken_ms || 0) / 1000) || 0;
+    const blockIndex = Number(winnerData.blockIndex || winnerData.block_index) || 1;
+    const displayHash = winnerData.display_hash || winnerData.displayHash || `0x0000${Math.random().toString(16).slice(2, 10)}89f2`;
+    const blockId = winnerData.id || `block-${blockIndex}-${Date.now()}`;
+
+    // 1. Immediately update blocks state and trigger 3D animation without reload
+    setBlocks((prev) => {
+      // Deduplicate: Don't add if already in ledger (by id or by positive block_index)
+      const exists = prev.some((b) => 
+        (winnerData.id && b.id === winnerData.id) ||
+        (blockIndex > 0 && b.block_index === blockIndex)
+      );
+      if (exists) {
+        return prev;
+      }
+
+      setNewBlockId(blockId);
+      return [
+        ...prev,
+        {
+          id: blockId,
+          block_index: blockIndex,
+          display_hash: displayHash,
+          time_taken_ms: Math.round(timeTaken * 1000),
+          miners: { name: winnerName },
+        },
+      ];
     });
 
-    // Add to local blocks chain
-    setBlocks((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(),
-        block_index: blockIndex || prev.length + 1,
-        display_hash: `0x0000${Math.random().toString(16).slice(2, 10)}89f2`,
-        time_taken_ms: (timeTaken || 0) * 1000,
-        miners: { name: winner },
-      },
-    ]);
+    // 2. Advance projector center stage to 'block_found' immediately
+    triggerStage('block_found', {
+      winnerName,
+      timeTaken,
+      blockIndex,
+    });
   };
+
+  const executeBlockFound = handleIncomingBlock;
 
   // 3. Stage Transitions & Auto-Advance with Full Video Loop Guarantee
   const triggerStage = (nextStage, data = {}) => {
@@ -382,18 +417,7 @@ export default function DisplayBoardView() {
 
         {/* Stage Status Badge */}
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/80 border border-purple-500/30 font-mono text-xs shadow-inner">
-            <span
-              className={`w-2.5 h-2.5 rounded-full ${
-                stage === 'idle'
-                  ? 'bg-amber-400 animate-pulse'
-                  : stage === 'broadcasting'
-                  ? 'bg-blue-400 animate-ping'
-                  : stage === 'mining'
-                  ? 'bg-red-500 animate-ping'
-                  : 'bg-emerald-400 animate-bounce'
-              }`}
-            />
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900/80 border border-purple-950 font-mono text-xs text-white shadow-inner">
             <span className="uppercase tracking-widest text-slate-200 font-semibold text-[11px]">
               {stage === 'idle' && 'MEMPOOL OPEN'}
               {stage === 'broadcasting' && 'BROADCASTING BLOCK'}
@@ -403,7 +427,7 @@ export default function DisplayBoardView() {
             </span>
           </div>
 
-          <div className="font-mono text-xs bg-purple-950/60 border border-purple-700/50 px-3 py-1.5 rounded-xl text-purple-200">
+          <div className="font-mono text-xs bg-purple-950 border border-purple-700/50 px-3 py-1.5 text-white-200">
             Active Nodes: <strong className="text-white font-bold">{miners.length}</strong>
           </div>
         </div>
@@ -415,18 +439,10 @@ export default function DisplayBoardView() {
         {/* STAGE 1: IDLE / WAITING ROOM */}
         {stage === 'idle' && (
           <div className="flex flex-col items-center text-center animate-fade-in max-w-2xl">
-            <div className="relative mb-3">
-              <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-purple-600 to-fuchsia-500 flex items-center justify-center text-3xl shadow-[0_0_40px_rgba(217,70,239,0.6)] animate-pulse-slow">
-                ⚡
-              </div>
-            </div>
             
             <h2 className="text-3xl md:text-4xl font-black text-white tracking-tight mb-2">
               AWAITING NEXT BLOCK BROADCAST
             </h2>
-            <p className="text-purple-300 text-sm font-light mb-4 max-w-lg">
-              Miners authenticate via mobile to enter the memory pool. Once consensus starts, race to solve 5 cryptographic puzzles.
-            </p>
 
             {/* Connected Miners Pills */}
             <div className="w-full bg-slate-900/70 p-4 rounded-2xl border border-white/10 backdrop-blur-md">
@@ -558,44 +574,173 @@ export default function DisplayBoardView() {
 
       </main>
 
-      {/* BOTTOM BLOCKCHAIN TIMELINE (flex-shrink-0: NEVER cut in half) */}
-      <footer className="relative z-20 flex-shrink-0 w-full px-8 py-3 bg-slate-950/90 border-t border-white/10 backdrop-blur-xl">
-        <div className="flex items-center justify-between mb-2 text-[11px] font-mono font-bold text-purple-400 uppercase tracking-widest">
+      {/* BOTTOM BLOCKCHAIN TIMELINE (3D CUBE LEDGER) */}
+      <footer className="relative z-20 flex-shrink-0 w-full px-8 py-2 bg-slate-950/90 border-t border-white/10 backdrop-blur-xl">
+        <div className="flex items-center justify-between mb-1 text-[11px] font-mono font-bold text-purple-400 uppercase tracking-widest">
           <span>Distributed Ledger (Mined Blocks)</span>
           <span className="text-slate-400 font-normal">Genesis &rarr; Latest</span>
         </div>
 
-        <div className="flex items-center gap-3 overflow-x-auto pb-1 custom-scrollbar">
-          {/* Genesis Block */}
-          <div className="flex-shrink-0 flex items-center gap-2">
-            <div className="w-36 bg-slate-900/80 border border-purple-800/50 p-2.5 rounded-xl flex flex-col shadow-md">
-              <span className="font-mono text-[9px] text-fuchsia-400 font-bold uppercase">Block #000</span>
-              <span className="text-xs font-semibold text-white truncate">GENESIS</span>
-              <span className="font-mono text-[9px] text-slate-500 truncate">0x00000000...0000</span>
-            </div>
-            <span className="text-purple-500 font-mono text-xs font-bold">&rarr;</span>
+        <div className="blockchain-3d-container" ref={blockchainRef}>
+          <div className="blockchain-3d-inner">
+            {(() => {
+              const genesisBlock = {
+                id: 'genesis-000',
+                isGenesis: true,
+                block_index: 0,
+                name: 'GENESIS',
+                display_hash: '0x00000000...0000',
+                time_taken_ms: 0,
+              };
+              const hasDbGenesis = blocks.some((b) => b.block_index === 0);
+              const allBlocks = hasDbGenesis ? blocks : [genesisBlock, ...blocks];
+
+              return allBlocks.map((b, idx) => {
+                const isGenesis = b.isGenesis || b.block_index === 0;
+                const isNew = b.id === newBlockId;
+                const isConnectingToNew = idx < allBlocks.length - 1 && allBlocks[idx + 1]?.id === newBlockId;
+
+                return (
+                  <div key={b.id || idx} className="chain-item-3d">
+                    <motion.div
+                      className="cube-wrapper-3d"
+                      initial={
+                        isNew
+                          ? {
+                              opacity: 0,
+                              scale: 0.1,
+                              x: 140,
+                              y: -35,
+                              rotateX: -75,
+                              rotateY: -75,
+                              rotateZ: 45,
+                            }
+                          : false
+                      }
+                      animate={{
+                        opacity: 1,
+                        scale: 1,
+                        x: 0,
+                        y: 0,
+                        rotateX: 0,
+                        rotateY: 0,
+                        rotateZ: 0,
+                      }}
+                      transition={{
+                        duration: 1.1,
+                        ease: [0.16, 1, 0.3, 1],
+                      }}
+                    >
+                      {/* IMPACT SHOCKWAVE */}
+                      {isNew && (
+                        <motion.div
+                          className="impact-3d"
+                          initial={{
+                            opacity: 0,
+                            scale: 0,
+                          }}
+                          animate={{
+                            opacity: [0, 1, 0],
+                            scale: [0, 1.1, 2.5],
+                          }}
+                          transition={{
+                            duration: 0.45,
+                            delay: 1.18,
+                            times: [0, 0.25, 1],
+                          }}
+                        />
+                      )}
+
+                      {/* 3D CUBE */}
+                      <div className={`cube-3d ${isGenesis ? 'genesis' : ''} ${isNew ? 'new-block' : ''}`}>
+                        {/* FRONT FACE */}
+                        <div className="face-3d front">
+                          <motion.div
+                            className="w-full text-center flex flex-col items-center justify-center relative z-10"
+                            initial={isNew ? { opacity: 0, scale: 0.5 } : false}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{
+                              duration: 0.35,
+                              delay: isNew ? 1.38 : 0,
+                            }}
+                          >
+                            <div
+                              className={`text-[8px] font-mono tracking-wider font-bold mb-0.5 ${
+                                isGenesis ? 'text-amber-400' : 'text-fuchsia-300'
+                              }`}
+                            >
+                              {isGenesis ? 'BLOCK #000' : `BLOCK #${b.block_index}`}
+                            </div>
+                            <div className="text-[11px] font-bold text-white truncate max-w-[95px] mb-0.5">
+                              {isGenesis ? 'GENESIS' : (b.miners?.name || b.name || 'Miner')}
+                            </div>
+                            <div className="w-full px-1 py-0.5 rounded bg-black/70 border border-purple-500/20 font-mono text-[7px] text-purple-200 truncate">
+                              {b.display_hash}
+                            </div>
+                            {!isGenesis && (
+                              <div className="text-[8px] font-mono text-emerald-400 font-semibold mt-0.5">
+                                {((b.time_taken_ms || 0) / 1000).toFixed(1)}s
+                              </div>
+                            )}
+                          </motion.div>
+                        </div>
+
+                        {/* BACK FACE */}
+                        <div className="face-3d back">
+                          <span>⛓</span>
+                        </div>
+
+                        {/* RIGHT FACE */}
+                        <div className="face-3d right">
+                          <span>{isGenesis ? '💎' : '₿'}</span>
+                        </div>
+
+                        {/* LEFT FACE */}
+                        <div className="face-3d left">
+                          <span>{isGenesis ? '🏛️' : 'Ξ'}</span>
+                        </div>
+
+                        {/* TOP FACE */}
+                        <div className="face-3d top">
+                          <span>{isGenesis ? 'GENESIS' : 'BLOCKCHAIN'}</span>
+                        </div>
+
+                        {/* BOTTOM FACE */}
+                        <div className="face-3d bottom">
+                          <span>🔗</span>
+                        </div>
+                      </div>
+                    </motion.div>
+
+                    {/* CONNECTING CHAIN LINK */}
+                    {idx < allBlocks.length - 1 && (
+                      <motion.div
+                        className="chain-link-3d"
+                        initial={
+                          isConnectingToNew
+                            ? {
+                                opacity: 0,
+                                scaleX: 0,
+                              }
+                            : false
+                        }
+                        animate={{
+                          opacity: 1,
+                          scaleX: 1,
+                        }}
+                        transition={{
+                          duration: 0.4,
+                          delay: isConnectingToNew ? 1.75 : 0,
+                        }}
+                      >
+                        ⛓
+                      </motion.div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
           </div>
-
-          {/* Mined Blocks */}
-          {blocks.map((b, i) => (
-            <div key={b.id || i} className="flex-shrink-0 flex items-center gap-2 animate-fade-in">
-              <div className="w-40 bg-purple-950/40 border border-purple-500/40 p-2.5 rounded-xl flex flex-col shadow-[0_0_12px_rgba(168,85,247,0.2)]">
-                <div className="flex justify-between items-center mb-0.5">
-                  <span className="font-mono text-[9px] text-fuchsia-300 font-bold">Block #{b.block_index}</span>
-                  <span className="font-mono text-[9px] text-emerald-400 font-semibold">{((b.time_taken_ms || 0) / 1000).toFixed(1)}s</span>
-                </div>
-                <span className="text-xs font-bold text-white truncate">{b.miners?.name || 'Miner'}</span>
-                <span className="font-mono text-[8px] text-purple-300/50 truncate">{b.display_hash}</span>
-              </div>
-              {i < blocks.length - 1 && <span className="text-purple-500 font-mono text-xs font-bold">&rarr;</span>}
-            </div>
-          ))}
-
-          {blocks.length === 0 && (
-            <div className="text-slate-500 font-mono text-xs italic py-1">
-              Waiting for Block #001 to be mined by students...
-            </div>
-          )}
         </div>
       </footer>
 
